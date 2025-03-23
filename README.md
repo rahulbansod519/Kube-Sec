@@ -40,7 +40,7 @@ kube-sec connect
 kube-sec connect <API_SERVER> --token-path <TOKEN-PATH>
 ```
 
-For instructions on creating a Service Account, see [Service Account Setup](Service Account Setup.md).
+For instructions on creating a Service Account, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
 
 ### Run Security Scan
 
@@ -77,7 +77,7 @@ kube-sec scan -s --weekly
 For a full list of available commands, see [Command Cheatsheet](COMMANDS.md).
 
 ## Service Account Setup
-For creating a Service Account and retrieving its token, see [Service Account Setup](SERVICE_ACCOUNT.md).
+For creating a Service Account and retrieving its token, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
 
 
 
