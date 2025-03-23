@@ -1,5 +1,10 @@
 # Kubernetes Security Hardening CLI
 
+
+https://github.com/user-attachments/assets/c55b8fa9-2dfc-4497-bb4b-b9684b7c8ef2
+
+
+
 ## Overview
 Kubernetes Security Hardening CLI is a tool designed to scan Kubernetes clusters for security misconfigurations and vulnerabilities. It helps identify issues such as:
 
