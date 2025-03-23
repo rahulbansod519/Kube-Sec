@@ -79,5 +79,9 @@ For a full list of available commands, see [Command Cheatsheet](https://github.c
 ## Service Account Setup
 For creating a Service Account and retrieving its token, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
 
+## Disclaimer
+
+This is a basic project, and more features are yet to come. It is not production-ready. We welcome feedback and suggestions on what features you would like to see in future updates.
+
 
 
