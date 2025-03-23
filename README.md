@@ -74,7 +74,7 @@ kube-sec scan -s --weekly
 ```
 
 ## CLI Commands Cheatsheet
-For a full list of available commands, see [Command Cheatsheet](COMMANDS.md).
+For a full list of available commands, see [Command Cheatsheet](https://github.com/rahulbansod519/Kube-Sec/blob/main/COMMANDS.md).
 
 ## Service Account Setup
 For creating a Service Account and retrieving its token, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
