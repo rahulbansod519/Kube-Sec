@@ -65,7 +65,7 @@ security_checks = {
 kube-scan scan --disable rbac-misconfig
 
 # Export results in JSON format
-python main.py scan --output report.json
+kube-sec scan --output report.json
 ```
 
 ### Schedule a Scan
