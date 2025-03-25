@@ -74,18 +74,32 @@ def connect(api_server, token_path, token, insecure):
 @click.option('--output-format', '-o', type=click.Choice(["json", "yaml"], case_sensitive=False), help="Export report format")
 @click.option('--schedule', '-s', "schedule_option", type=click.Choice(["daily", "weekly"], case_sensitive=False), help="Schedule security scans automatically")
 def scan(disable_checks, output_format, schedule_option):
-    click.secho("\n🚀 Starting Kubernetes Security Scan...\n", fg="cyan", bold=True)
+    if not output_format:
+        click.secho("\n🚀 Starting Kubernetes Security Scan...\n", fg="cyan", bold=True)
 
     nodes = check_cluster_connection()
     if not nodes:
-        click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
-        logging.error("Cluster connection failed. Exiting.")
+        error_report = {
+            "scan_timestamp": datetime.utcnow().isoformat() + "Z",
+            "status": "error",
+            "message": "Unable to connect to cluster",
+            "scan_results": {}
+        }
+        if output_format == "json":
+            with open("output.json", 'w') as f:
+                json.dump(error_report, f, indent=4)
+        elif output_format == "yaml":
+            with open("output.yaml", 'w') as f:
+                yaml.dump(error_report, f, default_flow_style=False, sort_keys=False)
+        if not output_format:
+            click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
         return
 
     def run_scan():
-        click.secho("✅ Cluster connection verified.", fg="green")
-        click.secho("\n🔍 Running Security Checks...", fg="cyan", bold=True)
-        click.echo("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        if not output_format:
+            click.secho("✅ Cluster connection verified.", fg="green")
+            click.secho("\n🔍 Running Security Checks...", fg="cyan", bold=True)
+            click.echo("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         logging.info("Cluster connection verified. Running security checks.")
 
@@ -115,37 +129,39 @@ def scan(disable_checks, output_format, schedule_option):
         critical = sum(1 for severity, _ in security_issues if severity == "Critical")
         warning = sum(1 for severity, _ in security_issues if severity == "Warning")
 
-        click.echo("\n✅ Scan Completed")
-        click.secho("\n📊 Security Summary:", bold=True)
-        click.secho(f"   🔴 {critical} Critical Issues", fg="red")
-        click.secho(f"   🟡 {warning} Warnings", fg="yellow")
+        if not output_format:
+            click.echo("\n✅ Scan Completed")
+            click.secho("\n📊 Security Summary:", bold=True)
+            click.secho(f"   🔴 {critical} Critical Issues", fg="red")
+            click.secho(f"   🟡 {warning} Warnings", fg="yellow")
 
-        if security_issues:
-            click.echo("\n🚨 Issues Detected:")
-            for severity, message in security_issues:
-                color = "red" if severity == "Critical" else "yellow"
-                click.secho(f"[{severity.upper()}] {message}", fg=color)
-        else:
-            click.secho("\n✅ No security issues found.", fg="green")
-
-        click.secho("\n📦 Detailed Check Results:", fg="cyan", bold=True)
-        for check, output in results.items():
-            click.echo(f"\n🔍 {check}")
-            if isinstance(output, list) and output and isinstance(output[0], dict):
-                click.echo(tabulate(output, headers="keys", tablefmt="grid"))
-            elif isinstance(output, list) and output:
-                for item in output:
-                    click.echo(f" - {item}")
-            elif output:
-                click.echo(str(output))
+            if security_issues:
+                click.echo("\n🚨 Issues Detected:")
+                for severity, message in security_issues:
+                    color = "red" if severity == "Critical" else "yellow"
+                    click.secho(f"[{severity.upper()}] {message}", fg=color)
             else:
-                click.secho("✅ No issues found.", fg="green")
+                click.secho("\n✅ No security issues found.", fg="green")
+
+            click.secho("\n📦 Detailed Check Results:", fg="cyan", bold=True)
+            for check, output in results.items():
+                click.echo(f"\n🔍 {check}")
+                if isinstance(output, list) and output and isinstance(output[0], dict):
+                    click.echo(tabulate(output, headers="keys", tablefmt="grid"))
+                elif isinstance(output, list) and output:
+                    for item in output:
+                        click.echo(f" - {item}")
+                elif output:
+                    click.echo(str(output))
+                else:
+                    click.secho("✅ No issues found.", fg="green")
 
         logging.info("Security scan completed.")
 
         if output_format in ["json", "yaml"]:
             enriched_report = {
                 "scan_timestamp": datetime.utcnow().isoformat() + "Z",
+                "status": "completed",
                 "api_server_version": client.VersionApi().get_code().git_version,
                 "node_count": len(nodes),
                 "pod_count": len(client.CoreV1Api().list_pod_for_all_namespaces().items),
@@ -160,14 +176,12 @@ def scan(disable_checks, output_format, schedule_option):
             if output_format == "json":
                 with open("output.json", 'w') as file:
                     file.write(json_data)
-                click.secho("\n📝 Report saved to output.json", fg="green")
                 logging.info("Security report saved as JSON.")
 
             elif output_format == "yaml":
                 data = json.loads(json_data)
                 with open("output.yaml", 'w') as file:
                     yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-                click.secho("\n📝 Report saved to output.yaml", fg="green")
                 logging.info("Security report saved as YAML.")
 
     if schedule_option:
