@@ -5,8 +5,6 @@ import schedule
 import time
 import threading
 import concurrent.futures
-from dotenv import load_dotenv
-from pathlib import Path
 from kubernetes import config, client
 import json
 import yaml
@@ -22,7 +20,6 @@ from kube_secure.scanner import (
     check_publicly_accessible_services,
     check_privileged_containers,
     check_host_pid_and_network,
-    print_security_summary,
     check_open_ports,
     check_weak_firewall_rules,
     security_issues
