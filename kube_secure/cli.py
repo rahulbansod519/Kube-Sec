@@ -5,6 +5,7 @@ import schedule
 import time
 import threading
 import concurrent.futures
+
 from kubernetes import config, client
 import json
 import yaml
@@ -12,17 +13,23 @@ import keyring
 from datetime import datetime
 from tabulate import tabulate
 from keyring.errors import PasswordDeleteError
+from kube_secure.check_metadata import check_descriptions
+
 
 from kube_secure.scanner import (
     check_cluster_connection,
     check_pods_running_as_root,
     check_rbac_misconfigurations,
     check_publicly_accessible_services,
-    check_privileged_containers,
+    check_privileged_containers_and_hostpath,
     check_host_pid_and_network,
     check_open_ports,
     check_weak_firewall_rules,
-    security_issues
+    security_issues,
+    # check_kubernetes_version,
+    check_pods_running_as_non_root,
+    check_rbac_least_privilege,
+    check_network_exposure
 )
 from kube_secure.logger import save_credentials
 
@@ -84,7 +91,6 @@ def disconnect():
     else:
         click.secho("ℹ️ You were using kubeconfig. Nothing to disconnect.", fg="yellow")
 
-
 @click.command()
 @click.option('--disable-checks', '-d', multiple=True, help="Disable specific checks (e.g., --disable-checks privileged-containers)")
 @click.option('--output-format', '-o', type=click.Choice(["json", "yaml"], case_sensitive=False), help="Export report format")
@@ -120,14 +126,19 @@ def scan(disable_checks, output_format, schedule_option):
         logging.info("Cluster connection verified. Running security checks.")
 
         security_checks = {
-            "privileged-containers": check_privileged_containers,
-            "host-pid": check_host_pid_and_network,
-            "pods-running-as-root": check_pods_running_as_root,
-            "rbac-misconfig": check_rbac_misconfigurations,
-            "public-services": check_publicly_accessible_services,
-            "open-ports": check_open_ports,
-            "Weak-firewall-rules": check_weak_firewall_rules
+            "host-pid-and-network-exposure": check_host_pid_and_network,
+            "root-user-pods": check_pods_running_as_root,  
+            "non-root-enforcement": check_pods_running_as_non_root,  
+            "rbac-privileges": check_rbac_misconfigurations,  
+            "rbac-least-privilege": check_rbac_least_privilege,  
+            "public-service-exposure": check_publicly_accessible_services,  
+            "open-network-ports": check_open_ports,  
+            "internal-traffic-controls": check_weak_firewall_rules,  
+            # "kubernetes-version": check_kubernetes_version,  
+            "external-service-exposure": check_network_exposure,  
+            "privileged-containers-and-hostpath-mounts": check_privileged_containers_and_hostpath  
         }
+
 
         enabled_checks = {name: func for name, func in security_checks.items() if name not in disable_checks}
 
@@ -158,10 +169,14 @@ def scan(disable_checks, output_format, schedule_option):
                     click.secho(f"[{severity.upper()}] {message}", fg=color)
             else:
                 click.secho("\n✅ No security issues found.", fg="green")
-
+        if not output_format:
             click.secho("\n📦 Detailed Check Results:", fg="cyan", bold=True)
             for check, output in results.items():
-                click.echo(f"\n🔍 {check}")
+                description = check_descriptions.get(check, "")
+                click.secho(f"\n🔍 {check}", fg="cyan", bold=True)
+                if description:
+                    click.echo(f"   ⤷ {description}")
+
                 if isinstance(output, list) and output and isinstance(output[0], dict):
                     click.echo(tabulate(output, headers="keys", tablefmt="grid"))
                 elif isinstance(output, list) and output:
@@ -171,6 +186,7 @@ def scan(disable_checks, output_format, schedule_option):
                     click.echo(str(output))
                 else:
                     click.secho("✅ No issues found.", fg="green")
+
 
         logging.info("Security scan completed.")
 

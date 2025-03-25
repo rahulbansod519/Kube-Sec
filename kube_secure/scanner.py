@@ -46,17 +46,60 @@ def check_cluster_connection():
         v1 = client.CoreV1Api()
         nodes = v1.list_node().items
         server_version = client.VersionApi().get_code()
+      
         pods = v1.list_pod_for_all_namespaces().items
 
         print("\n🔹 Kubernetes Cluster Information:")
         print(f"   🏷️  API Server Version: {server_version.git_version}")
         print(f"   🔢 Number of Nodes: {len(nodes)}")
-        print(f"      Number of Pods: {len(pods)}")
-
+       
         return nodes
     except Exception as e:
         print("\n❌ Unable to connect to Kubernetes cluster!")
         print(f"   Error: {str(e)}")
+        return None
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@require_cluster_connection
+def check_privileged_containers_and_hostpath():
+    v1 = client.CoreV1Api()
+    results = []
+    try:
+        pods = v1.list_pod_for_all_namespaces().items
+        for pod in pods:
+            for container in pod.spec.containers:
+                is_privileged = container.security_context and container.security_context.privileged
+                has_hostpath = False
+                if container.volume_mounts:
+                    for mount in container.volume_mounts:
+                        if "hostPath" in mount.name or mount.mount_path == "/host":
+                            has_hostpath = True
+                            break
+                if is_privileged and has_hostpath:
+                    results.append({
+                        "Namespace": pod.metadata.namespace,
+                        "Pod Name": pod.metadata.name,
+                        "Container Name": container.name,
+                        "Issue": "Privileged container and HostPath volume mount"
+                    })
+                elif is_privileged:
+                    results.append({
+                        "Namespace": pod.metadata.namespace,
+                        "Pod Name": pod.metadata.name,
+                        "Container Name": container.name,
+                        "Issue": "Privileged container"
+                    })
+                elif has_hostpath:
+                    results.append({
+                        "Namespace": pod.metadata.namespace,
+                        "Pod Name": pod.metadata.name,
+                        "Container Name": container.name,
+                        "Issue": "HostPath volume mount"
+                    })
+        return results
+    except Exception as e:
+        logging.error("Error checking privileged containers and HostPath volumes:", str(e))
         return None
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
@@ -81,22 +124,79 @@ def check_pods_running_as_root():
         return risky_pods
     except Exception as e:
         logging.error("\n❌ Error checking pods running as root:", str(e))
+        return None
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
-def check_rbac_misconfigurations():
-    rbac_api = client.RbacAuthorizationV1Api()
-    risky_user = []
+def check_host_pid_and_network():
+    v1 = client.CoreV1Api()
+    risky_network_pods = []
     try:
-        roles = rbac_api.list_cluster_role_binding().items
-        for role in roles:
-            if role.role_ref.name == "Cluster-admin":
-                for subject in role.subjects or []:
-                    if subject.kind in ["User", "Group", "ServiceAccount"]:
-                        risky_user.append((subject.kind, subject.name))
-        return risky_user
+        pods = v1.list_pod_for_all_namespaces().items
+        for pod in pods:
+            if pod.spec.host_pid or pod.spec.host_network:
+                risky_network_pods.append({
+                    "Namespace": pod.metadata.namespace, 
+                    "Pod Name": pod.metadata.name, 
+                    "Host PID": pod.spec.host_pid, 
+                    "Host Network": pod.spec.host_network})
+                message = f"Pod {pod.metadata.name} is using hostPID={pod.spec.host_pid}, hostNetwork={pod.spec.host_network}"
+                log_issue("Warning", message)
+        return risky_network_pods
     except Exception as e:
-        logging.error("\n Error checking RBAC misconfiguration", str(e))
+        logging.error("\n❌ Error checking hostPID/hostNetwork:", str(e))
+        return None
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@require_cluster_connection
+def check_pods_running_as_non_root():
+    v1 = client.CoreV1Api()
+    non_root_pods = []
+    try:
+        pods = v1.list_pod_for_all_namespaces().items
+        for pod in pods:
+            for container in pod.spec.containers:
+                if container.security_context and container.security_context.run_as_non_root is False:
+                    non_root_pods.append({
+                        "Namespace": pod.metadata.namespace,
+                        "Pod name": pod.metadata.name,
+                        "Container name": container.name
+                    })
+        return non_root_pods
+    except Exception as e:
+        logging.error("Error checking non-root enforcement:", str(e))
+        return None
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@require_cluster_connection
+def check_open_ports():
+    v1 = client.CoreV1Api()
+    services = v1.list_service_for_all_namespaces().items
+    open_ports = []
+    for svc in services:
+        svc_name = svc.metadata.name
+        svc_namespace = svc.metadata.namespace
+        for port in svc.spec.ports:
+            port_number = port.port
+            external_ip = "N/A"
+
+            if svc.spec.type in ["LoadBalancer", "NodePort"]:
+                if svc.status.load_balancer and svc.status.load_balancer.ingress:
+                    external_ip = svc.status.load_balancer.ingress[0].ip if svc.status.load_balancer.ingress[0].ip else "N/A"
+
+                open_ports.append({
+                    "namespace": svc_namespace,
+                    "service": svc_name,
+                    "port": port_number,
+                    "type": svc.spec.type,
+                    "external_ip": external_ip
+                })
+
+    if not open_ports:
+        open_ports.append("No insecure open ports detected.")
+
+    return open_ports
+
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -116,91 +216,83 @@ def check_publicly_accessible_services():
         return public_services
     except Exception as e:
         logging.error("\n❌ Error checking public services:", str(e))
+        return None
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
-def check_privileged_containers():
+def check_network_exposure():
     v1 = client.CoreV1Api()
-    privileged_containers = []
+    public_services = []
     try:
-        pods = v1.list_pod_for_all_namespaces().items
-        for pod in pods:
-            for container in pod.spec.containers:
-                if container.security_context and container.security_context.privileged:
-                    privileged_containers.append({
-                        "Namesapce": pod.metadata.namespace, 
-                        "Pod Name": pod.metadata.name, 
-                        "Container Name":  container.name})
-                    message = f"Privileged container detected in {pod.metadata.name}/{container.name}"
-                    report_issue("Critical", message)
-        return privileged_containers
-    except Exception as e:
-        logging.error("\n Error Checking privileged containers")
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-@require_cluster_connection
-def check_host_pid_and_network():
-    v1 = client.CoreV1Api()
-    risky_network_pods = []
-    try:
-        pods = v1.list_pod_for_all_namespaces().items
-        for pod in pods:
-            if pod.spec.host_pid or pod.spec.host_network:
-                risky_network_pods.append({
-                    "Namespace": pod.metadata.namespace, 
-                    "Pod Name": pod.metadata.name, 
-                    "Host PID": pod.spec.host_pid, 
-                    "Host Network": pod.spec.host_network})
-                message = f"Pod {pod.metadata.name} is using hostPID={pod.spec.host_pid}, hostNetwork={pod.spec.host_network}"
-                report_issue("Warning", message)
-        return risky_network_pods
-    except Exception as e:
-        logging.error("\n❌ Error checking hostPID/hostNetwork:", str(e))
-
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
-@require_cluster_connection
-def check_open_ports():
-    v1 = client.CoreV1Api()
-    services = v1.list_service_for_all_namespaces().items
-    open_ports = []
-    for svc in services:
-        svc_name = svc.metadata.name
-        namespace = svc.metadata.namespace
-        for port in svc.spec.ports:
-            port_number = port.port
-            external_ip = "N/A"
-            if svc.spec.type in ["LoadBalancer", "NodePort"]:
-                if svc.status.load_balancer and svc.status.load_balancer.ingress:
-                    external_ip = svc.status.load_balancer.ingress[0].ip if svc.status.load_balancer.ingress[0].ip else "N/A"
-                open_ports.append({
-                    "namespace": namespace,
-                    "service": svc_name,
-                    "port": port_number,
-                    "type": svc.spec.type,
-                    "external_ip": external_ip
+        services = v1.list_service_for_all_namespaces().items
+        for svc in services:
+            if svc.spec and svc.spec.type in ["NodePort", "LoadBalancer"]:
+                svc_namespace = svc.metadata.namespace
+                external_ip = svc.status.load_balancer.ingress[0].ip if svc.status.load_balancer and svc.status.load_balancer.ingress else "N/A"
+                public_services.append({
+                    "Namespace": svc_namespace,
+                    "Service": svc.metadata.name,
+                    "Type": svc.spec.type,
+                    "External IP": external_ip
                 })
-    if open_ports:
-        logging.warning("Detected services with open ports:\n")
-    else:
-        logging.info("No insecure open ports detected.")
-        open_ports.append("No insecure open ports detected.")
-    return open_ports
+        return public_services
+    except Exception as e:
+        logging.error("Error checking network exposure:", str(e))
+        return None
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_weak_firewall_rules():
     networking_v1 = client.NetworkingV1Api()
-    network_policies = networking_v1.list_network_policy_for_all_namespaces().items
-    weak_policies = []
-    for policy in network_policies:
-        if not policy.spec.ingress:
-            weak_policies.append({"Policy": policy.metadata.name})
-    if weak_policies:
-        logging.warning("Found network policies allowing unrestricted access")
-    else:
-        logging.info("All network policies are properly configured.")
-        weak_policies.append("All network policies are properly configured.")
-    return weak_policies
+    try:
+        policies = networking_v1.list_network_policy_for_all_namespaces().items
+        weak_policies = []
+        for policy in policies:
+            if not policy.spec.ingress:
+                weak_policies.append({
+                    "Namespace": policy.metadata.namespace,
+                    "Policy": policy.metadata.name
+                })
+        return weak_policies
+    except Exception as e:
+        logging.error("Error checking firewall policies:", str(e))
+        return None
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@require_cluster_connection
+def check_rbac_misconfigurations():
+    rbac_api = client.RbacAuthorizationV1Api()
+    risky_user = []
+    try:
+        roles = rbac_api.list_cluster_role_binding().items
+        for role in roles:
+            if role.role_ref.name == "Cluster-admin":
+                for subject in role.subjects or []:
+                    if subject.kind in ["User", "Group", "ServiceAccount"]:
+                        risky_user.append((subject.kind, subject.name))
+        return risky_user
+    except Exception as e:
+        logging.error("\n Error checking RBAC misconfiguration", str(e))
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@require_cluster_connection
+def check_rbac_least_privilege():
+    rbac_api = client.RbacAuthorizationV1Api()
+    risky_roles = []
+    try:
+        roles = rbac_api.list_cluster_role_binding().items
+        for role in roles:
+            if role.role_ref.name == "Cluster-admin":
+                for subject in role.subjects or []:
+                    if subject.kind in ["User", "Group", "ServiceAccount"]:
+                        risky_roles.append((subject.kind, subject.name))
+        return risky_roles
+    except Exception as e:
+        logging.error("Error checking RBAC least privilege:", str(e))
+        return None
+
 
 def report_issue(severity, message):
     security_issues.append((severity, message))
