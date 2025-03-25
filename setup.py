@@ -10,6 +10,8 @@ setup(
         "colorama",
         "python-dotenv",
         "schedule",
+        "keyring",
+        "tenacity"
     
     ],
     entry_points={

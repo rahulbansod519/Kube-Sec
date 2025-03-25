@@ -5,12 +5,15 @@ import schedule
 import time
 import threading
 import concurrent.futures
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 from pathlib import Path
-from kubernetes import config
+from kubernetes import config, client
 import json
 import yaml
-# from kube_secure.format import parse_and_print_json
+import keyring
+from datetime import datetime
+from tabulate import tabulate
+
 from kube_secure.scanner import (
     check_cluster_connection,
     check_pods_running_as_root,
@@ -20,40 +23,12 @@ from kube_secure.scanner import (
     check_host_pid_and_network,
     print_security_summary,
     check_open_ports,
-    check_weak_firewall_rules
+    check_weak_firewall_rules,
+    security_issues
 )
+from kube_secure.logger import save_credentials
 
-load_dotenv()
 os.makedirs("logs", exist_ok=True)
-dotenv_path = Path(".env")
-
-def save_to_env(key, value):
-    """Save key-value pair to .env file."""
-    set_key(str(dotenv_path), key, value)
-    click.echo(f"✅ {key} saved to .env")
-
-def create_json_file(data):
-    try:
-        with open("output.json", 'w') as file:
-            file.write(data)  # Writing JSON data with indentation
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-
-def create_yaml_file(json_data, yaml_filename="output.yaml"):
-   
-    try:
-        # Convert JSON string to Python dictionary
-        data = json.loads(json_data)
-        
-        # Write the dictionary to a YAML file
-        with open(yaml_filename, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False, sort_keys=False)
-
-        logging.info(f"File '{yaml_filename}' created successfully.")
-    except json.JSONDecodeError as e:
-        logging.error(f"JSON decoding error: {e}")
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
 
 @click.group()
 def cli():
@@ -64,9 +39,8 @@ def cli():
 @click.argument('api_server', required=False)
 @click.option('--token-path', type=click.Path(exists=True), help="Path to file containing the API token")
 @click.option('--token', help="API token string")
-
-def connect(api_server, token_path, token):
-    """Connect to a Kubernetes cluster by saving API server and token."""
+@click.option('--insecure', is_flag=True, help="Disable SSL verification (Not recommended)")
+def connect(api_server, token_path, token, insecure):
     if not api_server and not token and not token_path:
         try:
             config.load_kube_config()
@@ -76,41 +50,45 @@ def connect(api_server, token_path, token):
         except Exception:
             click.echo("❌ No kubeconfig found. Provide --api-server and --token or --token-path.")
             return
-    
+
     if token_path and token:
         click.echo("❌ Provide either --token-path or --token, not both.")
         return
-    
+
     if token_path:
         with open(token_path, 'r') as f:
             token = f.read().strip()
-    
+
     if not token:
         click.echo("❌ No token provided.")
         return
-    
-    save_to_env("API_SERVER", api_server)
-    save_to_env("KUBE_TOKEN", token)
-    click.echo("🔗 Kubernetes cluster connection details saved.")
+
+    save_credentials(api_server, token)
+    keyring.set_password("kube-sec", "SSL_VERIFY", "false" if insecure else "true")
+    click.echo("🔐 Credentials saved securely using system keyring.")
+    if insecure:
+        click.echo("⚠️  SSL verification disabled. This is not recommended for production.")
 
 @click.command()
 @click.option('--disable-checks', '-d', multiple=True, help="Disable specific checks (e.g., --disable-checks privileged-containers)")
 @click.option('--output-format', '-o', type=click.Choice(["json", "yaml"], case_sensitive=False), help="Export report format")
 @click.option('--schedule', '-s', "schedule_option", type=click.Choice(["daily", "weekly"], case_sensitive=False), help="Schedule security scans automatically")
 def scan(disable_checks, output_format, schedule_option):
-    """Run a Kubernetes security scan with optional filters."""
-    click.echo("\n🚀 Running Kubernetes Security Scan...\n")
+    click.secho("\n🚀 Starting Kubernetes Security Scan...\n", fg="cyan", bold=True)
 
-    if not check_cluster_connection():
-        click.echo("\n❌ Exiting: Cannot proceed without cluster access.")
+    nodes = check_cluster_connection()
+    if not nodes:
+        click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
         logging.error("Cluster connection failed. Exiting.")
         return
 
     def run_scan():
-        click.echo("\n✅ Cluster connection verified. Running security checks...\n")
+        click.secho("✅ Cluster connection verified.", fg="green")
+        click.secho("\n🔍 Running Security Checks...", fg="cyan", bold=True)
+        click.echo("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
         logging.info("Cluster connection verified. Running security checks.")
 
-        # Define security checks
         security_checks = {
             "privileged-containers": check_privileged_containers,
             "host-pid": check_host_pid_and_network,
@@ -121,12 +99,9 @@ def scan(disable_checks, output_format, schedule_option):
             "Weak-firewall-rules": check_weak_firewall_rules
         }
 
-        # Filter out disabled checks
         enabled_checks = {name: func for name, func in security_checks.items() if name not in disable_checks}
 
         results = {}
-
-        # Run checks in parallel
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_to_check = {executor.submit(func): name for name, func in enabled_checks.items()}
             for future in concurrent.futures.as_completed(future_to_check):
@@ -137,24 +112,63 @@ def scan(disable_checks, output_format, schedule_option):
                     logging.error(f"Error running {check_name}: {e}")
                     results[check_name] = {"error": str(e)}
 
-        click.echo("\n📊 Security Scan Results:\n")
-        json_data = json.dumps(results, indent=4)
-        scan_data = json.loads(json.dumps(json_data))
-        print(scan_data)
+        critical = sum(1 for severity, _ in security_issues if severity == "Critical")
+        warning = sum(1 for severity, _ in security_issues if severity == "Warning")
 
-        # Print security summary
-        print_security_summary()
+        click.echo("\n✅ Scan Completed")
+        click.secho("\n📊 Security Summary:", bold=True)
+        click.secho(f"   🔴 {critical} Critical Issues", fg="red")
+        click.secho(f"   🟡 {warning} Warnings", fg="yellow")
+
+        if security_issues:
+            click.echo("\n🚨 Issues Detected:")
+            for severity, message in security_issues:
+                color = "red" if severity == "Critical" else "yellow"
+                click.secho(f"[{severity.upper()}] {message}", fg=color)
+        else:
+            click.secho("\n✅ No security issues found.", fg="green")
+
+        click.secho("\n📦 Detailed Check Results:", fg="cyan", bold=True)
+        for check, output in results.items():
+            click.echo(f"\n🔍 {check}")
+            if isinstance(output, list) and output and isinstance(output[0], dict):
+                click.echo(tabulate(output, headers="keys", tablefmt="grid"))
+            elif isinstance(output, list) and output:
+                for item in output:
+                    click.echo(f" - {item}")
+            elif output:
+                click.echo(str(output))
+            else:
+                click.secho("✅ No issues found.", fg="green")
+
         logging.info("Security scan completed.")
 
-        # Save report if required
-        if output_format == "json":
-            create_json_file(scan_data)
-            logging.info("Security report saved as JSON.")
-        elif output_format == "yaml":
-            create_yaml_file(scan_data)
-            logging.info("Security report saved as CSV.")
+        if output_format in ["json", "yaml"]:
+            enriched_report = {
+                "scan_timestamp": datetime.utcnow().isoformat() + "Z",
+                "api_server_version": client.VersionApi().get_code().git_version,
+                "node_count": len(nodes),
+                "pod_count": len(client.CoreV1Api().list_pod_for_all_namespaces().items),
+                "issues_summary": {
+                    "critical": critical,
+                    "warnings": warning
+                },
+                "scan_results": results
+            }
+            json_data = json.dumps(enriched_report, indent=4)
 
-        # click.echo(final_data)
+            if output_format == "json":
+                with open("output.json", 'w') as file:
+                    file.write(json_data)
+                click.secho("\n📝 Report saved to output.json", fg="green")
+                logging.info("Security report saved as JSON.")
+
+            elif output_format == "yaml":
+                data = json.loads(json_data)
+                with open("output.yaml", 'w') as file:
+                    yaml.dump(data, file, default_flow_style=False, sort_keys=False)
+                click.secho("\n📝 Report saved to output.yaml", fg="green")
+                logging.info("Security report saved as YAML.")
 
     if schedule_option:
         schedule_times = {"daily": "02:00", "weekly": "03:00"}

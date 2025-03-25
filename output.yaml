@@ -1,0 +1,171 @@
+scan_timestamp: '2025-03-25T09:00:32.260990Z'
+api_server_version: v1.32.2-gke.1182001
+node_count: 3
+pod_count: 56
+issues_summary:
+  critical: 6
+  warnings: 9
+scan_results:
+  Weak-firewall-rules:
+  - Policy: allow-all-egress
+  open-ports:
+  - namespace: argocd
+    service: argocd-server
+    port: 80
+    type: LoadBalancer
+    external_ip: 34.46.193.70
+  - namespace: argocd
+    service: argocd-server
+    port: 443
+    type: LoadBalancer
+    external_ip: 34.46.193.70
+  - namespace: default
+    service: flask-api-service
+    port: 80
+    type: LoadBalancer
+    external_ip: 146.148.88.112
+  - namespace: default
+    service: nginx-service
+    port: 80
+    type: LoadBalancer
+    external_ip: 34.55.36.171
+  - namespace: kube-system
+    service: default-http-backend
+    port: 80
+    type: NodePort
+    external_ip: N/A
+  public-services:
+  - Namesapce: argocd
+    Service: argocd-server
+    Type: LoadBalancer
+  - Namesapce: default
+    Service: flask-api-service
+    Type: LoadBalancer
+  - Namesapce: default
+    Service: nginx-service
+    Type: LoadBalancer
+  - Namesapce: kube-system
+    Service: default-http-backend
+    Type: NodePort
+  rbac-misconfig: []
+  pods-running-as-root:
+  - Namespace: argocd
+    Pod name: argocd-application-controller-0
+  - Namespace: argocd
+    Pod name: argocd-applicationset-controller-75fc589ff7-w7vml
+  - Namespace: argocd
+    Pod name: argocd-dex-server-6885978985-9f92n
+  - Namespace: argocd
+    Pod name: argocd-notifications-controller-5fc96f6d96-hrbbq
+  - Namespace: argocd
+    Pod name: argocd-repo-server-6c6fdf9c9-f59kx
+  - Namespace: argocd
+    Pod name: argocd-server-55896669d5-xkjw5
+  - Namespace: csv-processing-1
+    Pod name: csv-worker-868c5464fc-zxcf7
+  - Namespace: csv-processing
+    Pod name: csv-autoscaler-8695878649-7bgnz
+  - Namespace: csv-processing
+    Pod name: csv-worker-868c5464fc-4mfms
+  - Namespace: default
+    Pod name: flask-api-5695b6f96b-2xxkb
+  - Namespace: default
+    Pod name: k8s-operator-566cfb5595-kp8m6
+  - Namespace: default
+    Pod name: nginx-854d56bbc7-dtspz
+  - Namespace: default
+    Pod name: nginx-854d56bbc7-gv4zp
+  - Namespace: default
+    Pod name: robusta-holmes-76dd874bbc-gxj98
+  - Namespace: default
+    Pod name: robusta-runner-6bcf45447f-8k6wx
+  - Namespace: default
+    Pod name: root-shell
+  - Namespace: demo-namespace
+    Pod name: busybox-pod
+  - Namespace: demo-namespace
+    Pod name: memory-pressure-pod
+  - Namespace: demo-namespace
+    Pod name: nginx-pod-1
+  - Namespace: demo-namespace
+    Pod name: nginx-pod-2
+  - Namespace: ingress-test
+    Pod name: nginx
+  - Namespace: kube-system
+    Pod name: kube-dns-574dc45546-hbblg
+  - Namespace: kube-system
+    Pod name: kube-dns-574dc45546-jpbz8
+  - Namespace: kube-system
+    Pod name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-c000
+  - Namespace: kube-system
+    Pod name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-nlm9
+  - Namespace: kube-system
+    Pod name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-ntqs
+  - Namespace: kube-system
+    Pod name: pdcsi-node-59264
+  - Namespace: kube-system
+    Pod name: pdcsi-node-59264
+  - Namespace: kube-system
+    Pod name: pdcsi-node-qf8fz
+  - Namespace: kube-system
+    Pod name: pdcsi-node-qf8fz
+  - Namespace: kube-system
+    Pod name: pdcsi-node-swrgg
+  - Namespace: kube-system
+    Pod name: pdcsi-node-swrgg
+  privileged-containers:
+  - Namesapce: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-c000
+    Container Name: kube-proxy
+  - Namesapce: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-nlm9
+    Container Name: kube-proxy
+  - Namesapce: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-ntqs
+    Container Name: kube-proxy
+  - Namesapce: kube-system
+    Pod Name: pdcsi-node-59264
+    Container Name: gce-pd-driver
+  - Namesapce: kube-system
+    Pod Name: pdcsi-node-qf8fz
+    Container Name: gce-pd-driver
+  - Namesapce: kube-system
+    Pod Name: pdcsi-node-swrgg
+    Container Name: gce-pd-driver
+  host-pid:
+  - Namespace: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-c000
+    Host PID: null
+    Host Network: true
+  - Namespace: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-nlm9
+    Host PID: null
+    Host Network: true
+  - Namespace: kube-system
+    Pod Name: kube-proxy-gke-my-first-cluster-1-default-pool-15f4055d-ntqs
+    Host PID: null
+    Host Network: true
+  - Namespace: kube-system
+    Pod Name: pdcsi-node-59264
+    Host PID: null
+    Host Network: true
+  - Namespace: kube-system
+    Pod Name: pdcsi-node-qf8fz
+    Host PID: null
+    Host Network: true
+  - Namespace: kube-system
+    Pod Name: pdcsi-node-swrgg
+    Host PID: null
+    Host Network: true
+  - Namespace: monitoring
+    Pod Name: prometheus-prometheus-node-exporter-7vjdd
+    Host PID: true
+    Host Network: true
+  - Namespace: monitoring
+    Pod Name: prometheus-prometheus-node-exporter-8qgg5
+    Host PID: true
+    Host Network: true
+  - Namespace: monitoring
+    Pod Name: prometheus-prometheus-node-exporter-rs57b
+    Host PID: true
+    Host Network: true
