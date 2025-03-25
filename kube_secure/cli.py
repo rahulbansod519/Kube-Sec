@@ -13,6 +13,7 @@ import yaml
 import keyring
 from datetime import datetime
 from tabulate import tabulate
+from keyring.errors import PasswordDeleteError
 
 from kube_secure.scanner import (
     check_cluster_connection,
@@ -68,6 +69,24 @@ def connect(api_server, token_path, token, insecure):
     click.echo("🔐 Credentials saved securely using system keyring.")
     if insecure:
         click.echo("⚠️  SSL verification disabled. This is not recommended for production.")
+
+@click.command()
+def disconnect():
+    deleted = 0
+    for key in ["API_SERVER", "KUBE_TOKEN", "SSL_VERIFY"]:
+        try:
+            keyring.delete_password("kube-sec", key)
+            deleted += 1
+        except PasswordDeleteError:
+            continue
+        except Exception as e:
+            logging.error(f"Error deleting key {key}: {e}")
+
+    if deleted > 0:
+        click.secho("🔓 Disconnected: credentials removed from system keyring.", fg="green")
+    else:
+        click.secho("ℹ️ You were using kubeconfig. Nothing to disconnect.", fg="yellow")
+
 
 @click.command()
 @click.option('--disable-checks', '-d', multiple=True, help="Disable specific checks (e.g., --disable-checks privileged-containers)")
@@ -208,6 +227,7 @@ def scan(disable_checks, output_format, schedule_option):
 
 cli.add_command(scan)
 cli.add_command(connect)
+cli.add_command(disconnect)
 
 if __name__ == "__main__":
     cli()
