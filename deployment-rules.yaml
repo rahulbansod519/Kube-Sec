@@ -1,0 +1,34 @@
+apiVersion: kube-sec.io/v1
+kind: CustomRuleSet
+metadata:
+  name: advanced-deployment-checks
+spec:
+  resource: Deployment
+  rules:
+    - field: spec.template.spec.containers[*].imagePullPolicy
+      equals: IfNotPresent
+      message: "Image pull policy should be 'IfNotPresent' for efficiency"
+
+    - field: spec.template.spec.containers[*].resources.requests.memory
+      exists: true
+      message: "Memory requests must be set for all containers"
+
+    - field: spec.template.spec.containers[*].securityContext.allowPrivilegeEscalation
+      equals: false
+      message: "Privilege escalation should be explicitly disallowed"
+
+    - field: metadata.labels.environment
+      exists: true
+      message: "Each deployment must specify an 'environment' label (e.g., dev/prod)"
+
+    - field: spec.revisionHistoryLimit
+      min: 5
+      message: "revisionHistoryLimit should be set to at least 5"
+
+    - field: spec.strategy.rollingUpdate.maxUnavailable
+      equals: 1
+      message: "MaxUnavailable should be set to 1 for safe rolling updates"
+
+    - field: spec.strategy.rollingUpdate.maxSurge
+      equals: 1
+      message: "MaxSurge should be set to 1 for controlled rollout"

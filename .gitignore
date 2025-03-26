@@ -1,0 +1,8 @@
+.venv/
+tests/
+logs/
+__pycache__/
+kube_sec.egg-info/
+service-account-token.txt
+output.json
+output.yaml
