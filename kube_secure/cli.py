@@ -60,7 +60,7 @@ def connect(api_server, token_path, token, insecure):
             set_session_active()
             logging.info("Connected to cluster using kubeconfig.")
             return
-        except Exception:
+        except Exception as e:
             click.echo("❌ No kubeconfig found. Provide --api-server and --token or --token-path.")
             logging.error(f"Connect failed: kubeconfig not found. Error: {e}")
             return
