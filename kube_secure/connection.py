@@ -22,6 +22,7 @@ def test_cluster_connection(api_server=None, token=None, ssl_verify=False, kubec
         v1.list_namespace(limit=1)  # Check namespaces to test connection
 
         logging.info("✅ Cluster connection successful.")
+        save_credentials(api_server,token,ssl_verify)
         return True
     except ApiException as e:
         logging.error(f"❌ Cluster connection failed: {e}")
@@ -29,6 +30,7 @@ def test_cluster_connection(api_server=None, token=None, ssl_verify=False, kubec
     except Exception as e:
         logging.error(f"❌ Unexpected error while connecting: {e}")
         return False
+
 
 
 def save_credentials(api_server, token, ssl_verify=False):
@@ -49,7 +51,7 @@ def load_credentials():
 
 def connect_to_cluster(api_server=None, token=None, token_path=None, ssl_verify=False, kubeconfig=False):
     """Main entry point for connecting to the cluster using kubeconfig or token-based authentication."""
-    print(ssl_verify)
+
     if kubeconfig:
         try:
             # If --kubeconfig flag is set, load kubeconfig

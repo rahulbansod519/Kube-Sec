@@ -5,6 +5,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 import functools
 from kube_secure.session import is_session_active, get_connection_method
 import keyring
+from kube_secure.connection import load_credentials
 security_issues = []
 
 def report_issue(severity, message):
