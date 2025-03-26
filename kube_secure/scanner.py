@@ -243,20 +243,68 @@ def check_network_exposure():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_weak_firewall_rules():
-    networking_v1 = client.NetworkingV1Api()
-    try:
-        policies = networking_v1.list_network_policy_for_all_namespaces().items
+    """Detects weak or ineffective NetworkPolicies (no ingress rules or not applied to any pods)."""
+    if load_k8():
+        networking_v1 = client.NetworkingV1Api()
+        core_v1 = client.CoreV1Api()
+
         weak_policies = []
-        for policy in policies:
-            if not policy.spec.ingress:
-                weak_policies.append({
-                    "Namespace": policy.metadata.namespace,
-                    "Policy": policy.metadata.name
-                })
-        return weak_policies
-    except Exception as e:
-        logging.error("Error checking firewall policies:", str(e))
-        return None
+
+        try:
+            all_pods = core_v1.list_pod_for_all_namespaces().items
+            policies = networking_v1.list_network_policy_for_all_namespaces().items
+
+            for policy in policies:
+                namespace = policy.metadata.namespace
+                policy_name = policy.metadata.name
+
+                # Case 1: No ingress rules defined
+                if not policy.spec.ingress:
+                    weak_policies.append({
+                        "Namespace": namespace,
+                        "Policy": policy_name,
+                        "Issue": "No ingress rules defined"
+                    })
+                    continue
+
+                # Case 2: Pod selector matches no pods
+                selector = policy.spec.pod_selector
+                matched = False
+
+                for pod in all_pods:
+                    if pod.metadata.namespace != namespace:
+                        continue
+
+                    # Check if pod labels match the policy selector
+                    if selector.match_labels:
+                        pod_labels = pod.metadata.labels or {}
+                        if all(pod_labels.get(k) == v for k, v in selector.match_labels.items()):
+                            matched = True
+                            break
+
+                if not matched:
+                    weak_policies.append({
+                        "Namespace": namespace,
+                        "Policy": policy_name,
+                        "Issue": "NetworkPolicy is ineffective because it doesn't apply to any existing pods"
+                    })
+
+            if not weak_policies:
+                weak_policies.append({"Info": "All network policies are properly scoped and enforced."})
+                logging.info("✅ All network policies are well-configured.")
+
+            else:
+                logging.warning("⚠️ Weak or ineffective NetworkPolicies detected.")
+
+            return weak_policies
+
+        except Exception as e:
+            logging.error("❌ Error checking NetworkPolicies:", str(e))
+            return [{"error": str(e)}]
+    else:
+        logging.error("❌ Cluster connection failed during NetworkPolicy check.")
+        return [{"error": "Cluster connection failed."}]
+
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
