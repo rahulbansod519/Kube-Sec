@@ -6,3 +6,5 @@ kube_sec.egg-info/
 service-account-token.txt
 output.json
 output.yaml
+dist/
+token.token

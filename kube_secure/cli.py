@@ -17,6 +17,7 @@ from kube_secure.check_metadata import check_descriptions
 from kube_secure.custom_rules_engine import load_custom_rules, run_custom_scan
 from kube_secure.session import is_session_active, clear_session, set_session_active
 from kube_secure.logger import *
+from kube_secure.connection import connect_to_cluster  # Import the new connection handler
 
 from kube_secure.scanner import (
     check_cluster_connection,
@@ -34,8 +35,6 @@ from kube_secure.scanner import (
     check_network_exposure,
     print_security_summary
 )
-from kube_secure.logger import save_credentials
-
 
 @click.group()
 def cli():
@@ -47,23 +46,30 @@ def cli():
 @click.option('--token-path', type=click.Path(exists=True), help="Path to file containing the API token")
 @click.option('--token', help="API token string")
 @click.option('--insecure', is_flag=True, help="Disable SSL verification (Not recommended)")
-def connect(api_server, token_path, token, insecure):
+@click.option('--kubeconfig', is_flag=True, help="Use kubeconfig for authentication")
+def connect(api_server, token_path, token, insecure, kubeconfig):
+    """Connect to a Kubernetes cluster with token-based credentials or kubeconfig."""
     if is_session_active():
         click.secho("🔁 You are already connected to the cluster.", fg="yellow")
         logging.info("Connect command skipped: already connected.")
         return
+
+    if kubeconfig:
+        # Use kubeconfig for authentication
+        if connect_to_cluster(kubeconfig=True):
+            set_session_active("kubeconfig")
+            click.secho("✅ Cluster authenticated successfully using kubeconfig.", fg="green")
+            logging.info("Cluster authenticated successfully using kubeconfig.")
+            return
+        else:
+            click.secho("❌ Failed to authenticate using kubeconfig.", fg="red")
+            return
+
+    # If no kubeconfig, use token-based authentication
     if not api_server and not token and not token_path:
-        try:
-            config.load_kube_config()
-            click.echo("✅ Using kubeconfig file for authentication.")
-            click.echo("Cluster Authenticated Successfully")
-            set_session_active()
-            logging.info("Connected to cluster using kubeconfig.")
-            return
-        except Exception as e:
-            click.echo("❌ No kubeconfig found. Provide --api-server and --token or --token-path.")
-            logging.error(f"Connect failed: kubeconfig not found. Error: {e}")
-            return
+        click.echo("❌ Provide --api-server and --token or --token-path.")
+        logging.error("Connect failed: API server and token are missing.")
+        return
 
     if token_path and token:
         click.echo("❌ Provide either --token-path or --token, not both.")
@@ -79,21 +85,22 @@ def connect(api_server, token_path, token, insecure):
         logging.warning("Connect command error: token not provided.")
         return
 
-    save_credentials(api_server, token)
-    keyring.set_password("kube-sec", "SSL_VERIFY", "false" if insecure else "true")
-    click.echo("🔐 Credentials saved securely using system keyring.")
-    if insecure:
-        click.echo("⚠️  SSL verification disabled. This is not recommended for production.")
-    set_session_active()
-    logging.info("Connected to cluster using token-based credentials.")
+    # Attempt to connect using token-based authentication
+    if not connect_to_cluster(api_server, token, ssl_verify=not insecure):
+        click.secho("❌ Cluster connection failed. Aborting.", fg="red")
+        return
 
-
+    set_session_active("token")  # Save connection method as token
+    click.secho("🔐 Connected to the cluster.", fg="green")
+    logging.info("Connected to cluster successfully.")
 @click.command()
 def disconnect():
+    """Disconnect from the Kubernetes cluster."""
     if not is_session_active():
         click.secho("⚠️ No active session found. You are already disconnected.", fg="yellow")
         logging.info("Disconnect called: no active session.")
         return
+
     deleted = 0
     for key in ["API_SERVER", "KUBE_TOKEN", "SSL_VERIFY"]:
         try:
@@ -120,14 +127,17 @@ def disconnect():
 @click.option('--custom-rules', type=click.Path(exists=True), help="Path to a YAML file with custom resource validation rules")
 @click.option('--schedule', '-s', "schedule_option", type=click.Choice(["daily", "weekly"], case_sensitive=False), help="Schedule security scans automatically")
 def scan(disable_checks, output_format, custom_rules, schedule_option):
+    """Run the Kubernetes security scan."""
     if not is_session_active():
         click.secho("❌ No active session found. Please run `kube-sec connect` first.", fg="red", bold=True)
         logging.warning("Scan attempt blocked: no active session.")
         return
+
     if not output_format:
         click.secho("\n🚀 Starting Kubernetes Security Scan...\n", fg="cyan", bold=True)
     logging.info("Scan command initiated.")
 
+    # Check cluster connection
     nodes = check_cluster_connection()
     if not nodes:
         click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
@@ -148,7 +158,6 @@ def scan(disable_checks, output_format, custom_rules, schedule_option):
             click.secho("\n📦 Custom Rule Scan Results:", fg="cyan", bold=True)
             if results:
                 # click.echo(tabulate(results, headers="keys", tablefmt="grid"))
-
                 grouped = defaultdict(list)
                 for item in results:
                     key = f"{item['Namespace']}/{item['Deployment']}"
@@ -173,6 +182,7 @@ def scan(disable_checks, output_format, custom_rules, schedule_option):
             click.secho(f"\n📝 Custom scan results saved to {filename}", fg="green")
             logging.info(f"Custom scan results saved to {filename}")
         return
+
     logging.info("Standard scan (non-custom) execution starting...")
     def run_scan():
         if not output_format:
@@ -195,7 +205,6 @@ def scan(disable_checks, output_format, custom_rules, schedule_option):
             "external-service-exposure": check_network_exposure,  
             "privileged-containers-and-hostpath-mounts": check_privileged_containers_and_hostpath  
         }
-
 
         enabled_checks = {name: func for name, func in security_checks.items() if name not in disable_checks}
 

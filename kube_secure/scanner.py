@@ -1,74 +1,77 @@
 import logging
-from kubernetes import client, config
+from kubernetes import client,config
 from colorama import Fore, Style
-import keyring
-# from kube_secure.logger import 
 from tenacity import retry, stop_after_attempt, wait_fixed
 import functools
-
+from kube_secure.session import is_session_active, get_connection_method
+import keyring
 security_issues = []
 
 def report_issue(severity, message):
     security_issues.append((severity, message))
     level = logging.WARNING if severity == "Warning" else logging.CRITICAL if severity == "Critical" else logging.INFO
-    # level = logging.INFO
-    logging.log(level, f" {message}")
-    
-def load_k8():
-    try:
-        config.load_kube_config()
-        return True
-    except:
-        try:
-            api_server = keyring.get_password("kube-sec", "api_server")
-            token = keyring.get_password("kube-sec", "kube_token")
-            ssl_verify = keyring.get_password("kube-sec", "SSL_VERIFY")
-
-            configuration = client.Configuration()
-            configuration.host = api_server
-            configuration.verify_ssl = ssl_verify != "false"
-            configuration.api_key = {"authorization": "Bearer " + token}
-
-            client.Configuration.set_default(configuration)
-            return True
-        except Exception as e:
-            logging.error("Error loading Kubernetes config:", e)
-            return False
+    logging.log(level, f"{message}")
 
 def require_cluster_connection(func):
+    """Ensure the function runs only when there is an active session."""
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        if not load_k8():
+        if not is_session_active():
             print("❌ Cluster connection required to run this check.")
-            print("💡 Use `kube-sec connect` to authenticate with your Kubernetes cluster.")
             return None
         return func(*args, **kwargs)
     return wrapper
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))     
+def load_k8():
+    """Load Kubernetes config based on connection method stored in session."""
+    connection_method = get_connection_method()
+    try:
+        if connection_method == "kubeconfig":
+            logging.info("Loading kubeconfig for authentication.")
+            config.load_kube_config()  # Loading kubeconfig file
+            return True
+        elif connection_method == "token":
+            api_server = keyring.get_password("kube-sec", "api_server")
+            token = keyring.get_password("kube-sec", "kube_token")
+            ssl_verify = keyring.get_password("kube-sec", "SSL_VERIFY")
+            
+            configuration = client.Configuration()
+            configuration.host = api_server
+            configuration.verify_ssl = ssl_verify != "false"
+            configuration.api_key = {"authorization": "Bearer " + token}
+            client.Configuration.set_default(configuration)
+            logging.info("Loaded Kubernetes configuration using token-based credentials.")
+            return True
+        else:
+            logging.error("❌ No valid connection method found. Please authenticate first.")
+            return False
+    except Exception as e:
+        logging.error(f"❌ Failed to load Kubernetes configuration: {e}")
+        return False
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_cluster_connection():
+    """Verifies Kubernetes cluster connection and returns basic cluster information."""
+    if not load_k8():
+        logging.error("Cluster connection failed: Invalid credentials or session.")
+        return None
     try:
         v1 = client.CoreV1Api()
         nodes = v1.list_node().items
         server_version = client.VersionApi().get_code()
-      
         pods = v1.list_pod_for_all_namespaces().items
 
-        print("\n🔹 Kubernetes Cluster Information:")
-        print(f"   🏷️  API Server Version: {server_version.git_version}")
-        print(f"   🔢 Number of Nodes: {len(nodes)}")
-       
+        logging.info("Cluster connection verified.")
         return nodes
     except Exception as e:
-        print("\n❌ Unable to connect to Kubernetes cluster!")
-        print(f"   Error: {str(e)}")
+        logging.error(f"Cluster connection failed: {e}")
         return None
-
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_privileged_containers_and_hostpath():
+    """Checks for privileged containers and containers with hostPath mounts."""
     v1 = client.CoreV1Api()
     results = []
     try:
@@ -116,6 +119,7 @@ def check_privileged_containers_and_hostpath():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_pods_running_as_root():
+    """Checks for pods running as root (UID 0) in all namespaces."""
     v1 = client.CoreV1Api()
     risky_pods = []
     try:
@@ -142,6 +146,7 @@ def check_pods_running_as_root():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_host_pid_and_network():
+    """Checks for pods using hostPID or hostNetwork, which can break container isolation."""
     v1 = client.CoreV1Api()
     risky_network_pods = []
     try:
@@ -164,6 +169,7 @@ def check_host_pid_and_network():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_pods_running_as_non_root():
+    """Checks that all containers are explicitly set to run as non-root (runAsNonRoot: true)."""
     v1 = client.CoreV1Api()
     non_root_pods = []
     try:
@@ -184,6 +190,7 @@ def check_pods_running_as_non_root():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_open_ports():
+    """Detects services with open ports and potential exposure."""
     v1 = client.CoreV1Api()
     services = v1.list_service_for_all_namespaces().items
     open_ports = []
@@ -215,6 +222,7 @@ def check_open_ports():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_publicly_accessible_services():
+    """Identifies services exposed externally via NodePort or LoadBalancer."""
     v1 = client.CoreV1Api()
     public_services = []
     try:
@@ -235,6 +243,7 @@ def check_publicly_accessible_services():
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
 def check_network_exposure():
+    """Detects LoadBalancer or NodePort services with public IPs."""
     v1 = client.CoreV1Api()
     public_services = []
     try:
@@ -258,66 +267,61 @@ def check_network_exposure():
 @require_cluster_connection
 def check_weak_firewall_rules():
     """Detects weak or ineffective NetworkPolicies (no ingress rules or not applied to any pods)."""
-    if load_k8():
-        networking_v1 = client.NetworkingV1Api()
-        core_v1 = client.CoreV1Api()
+    networking_v1 = client.NetworkingV1Api()
+    core_v1 = client.CoreV1Api()
 
-        weak_policies = []
+    weak_policies = []
 
-        try:
-            all_pods = core_v1.list_pod_for_all_namespaces().items
-            policies = networking_v1.list_network_policy_for_all_namespaces().items
+    try:
+        all_pods = core_v1.list_pod_for_all_namespaces().items
+        policies = networking_v1.list_network_policy_for_all_namespaces().items
 
-            for policy in policies:
-                namespace = policy.metadata.namespace
-                policy_name = policy.metadata.name
+        for policy in policies:
+            namespace = policy.metadata.namespace
+            policy_name = policy.metadata.name
 
-                # Case 1: No ingress rules defined
-                if not policy.spec.ingress:
-                    weak_policies.append({
-                        "Namespace": namespace,
-                        "Policy": policy_name,
-                        "Issue": "No ingress rules defined"
-                    })
+            # Case 1: No ingress rules defined
+            if not policy.spec.ingress:
+                weak_policies.append({
+                    "Namespace": namespace,
+                    "Policy": policy_name,
+                    "Issue": "No ingress rules defined"
+                })
+                continue
+
+            # Case 2: Pod selector matches no pods
+            selector = policy.spec.pod_selector
+            matched = False
+
+            for pod in all_pods:
+                if pod.metadata.namespace != namespace:
                     continue
 
-                # Case 2: Pod selector matches no pods
-                selector = policy.spec.pod_selector
-                matched = False
+                # Check if pod labels match the policy selector
+                if selector.match_labels:
+                    pod_labels = pod.metadata.labels or {}
+                    if all(pod_labels.get(k) == v for k, v in selector.match_labels.items()):
+                        matched = True
+                        break
 
-                for pod in all_pods:
-                    if pod.metadata.namespace != namespace:
-                        continue
+            if not matched:
+                weak_policies.append({
+                    "Namespace": namespace,
+                    "Policy": policy_name,
+                    "Issue": "NetworkPolicy is ineffective because it doesn't apply to any existing pods"
+                })
 
-                    # Check if pod labels match the policy selector
-                    if selector.match_labels:
-                        pod_labels = pod.metadata.labels or {}
-                        if all(pod_labels.get(k) == v for k, v in selector.match_labels.items()):
-                            matched = True
-                            break
+        if not weak_policies:
+            weak_policies.append({"Info": "All network policies are properly scoped and enforced."})
+            logging.info("✅ All network policies are well-configured.")
+        else:
+            logging.warning("⚠️ Weak or ineffective NetworkPolicies detected.")
 
-                if not matched:
-                    weak_policies.append({
-                        "Namespace": namespace,
-                        "Policy": policy_name,
-                        "Issue": "NetworkPolicy is ineffective because it doesn't apply to any existing pods"
-                    })
+        return weak_policies
 
-            if not weak_policies:
-                weak_policies.append({"Info": "All network policies are properly scoped and enforced."})
-                logging.info("✅ All network policies are well-configured.")
-
-            else:
-                logging.warning("⚠️ Weak or ineffective NetworkPolicies detected.")
-
-            return weak_policies
-
-        except Exception as e:
-            logging.error("❌ Error checking NetworkPolicies:", str(e))
-            return [{"error": str(e)}]
-    else:
-        logging.error("❌ Cluster connection failed during NetworkPolicy check.")
-        return [{"error": "Cluster connection failed."}]
+    except Exception as e:
+        logging.error("❌ Error checking NetworkPolicies:", str(e))
+        return [{"error": str(e)}]
 
 
 
