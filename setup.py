@@ -11,7 +11,10 @@ setup(
         "python-dotenv",
         "schedule",
         "keyring",
-        "tenacity"
+        "tenacity",
+        "pyyaml",
+        "jmespath",
+        "tabulate"
     
     ],
     entry_points={
