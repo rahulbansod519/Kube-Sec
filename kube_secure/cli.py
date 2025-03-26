@@ -5,7 +5,7 @@ import schedule
 import time
 import threading
 import concurrent.futures
-
+from collections import defaultdict
 from kubernetes import config, client
 import json
 import yaml
@@ -14,7 +14,9 @@ from datetime import datetime
 from tabulate import tabulate
 from keyring.errors import PasswordDeleteError
 from kube_secure.check_metadata import check_descriptions
-
+from kube_secure.custom_rules_engine import load_custom_rules, run_custom_scan
+from kube_secure.session import is_session_active, clear_session, set_session_active
+from kube_secure.logger import *
 
 from kube_secure.scanner import (
     check_cluster_connection,
@@ -29,11 +31,11 @@ from kube_secure.scanner import (
     # check_kubernetes_version,
     check_pods_running_as_non_root,
     check_rbac_least_privilege,
-    check_network_exposure
+    check_network_exposure,
+    print_security_summary
 )
 from kube_secure.logger import save_credentials
 
-os.makedirs("logs", exist_ok=True)
 
 @click.group()
 def cli():
@@ -46,18 +48,26 @@ def cli():
 @click.option('--token', help="API token string")
 @click.option('--insecure', is_flag=True, help="Disable SSL verification (Not recommended)")
 def connect(api_server, token_path, token, insecure):
+    if is_session_active():
+        click.secho("🔁 You are already connected to the cluster.", fg="yellow")
+        logging.info("Connect command skipped: already connected.")
+        return
     if not api_server and not token and not token_path:
         try:
             config.load_kube_config()
             click.echo("✅ Using kubeconfig file for authentication.")
             click.echo("Cluster Authenticated Successfully")
+            set_session_active()
+            logging.info("Connected to cluster using kubeconfig.")
             return
         except Exception:
             click.echo("❌ No kubeconfig found. Provide --api-server and --token or --token-path.")
+            logging.error(f"Connect failed: kubeconfig not found. Error: {e}")
             return
 
     if token_path and token:
         click.echo("❌ Provide either --token-path or --token, not both.")
+        logging.warning("Connect command error: both token and token-path provided.")
         return
 
     if token_path:
@@ -66,6 +76,7 @@ def connect(api_server, token_path, token, insecure):
 
     if not token:
         click.echo("❌ No token provided.")
+        logging.warning("Connect command error: token not provided.")
         return
 
     save_credentials(api_server, token)
@@ -73,9 +84,16 @@ def connect(api_server, token_path, token, insecure):
     click.echo("🔐 Credentials saved securely using system keyring.")
     if insecure:
         click.echo("⚠️  SSL verification disabled. This is not recommended for production.")
+    set_session_active()
+    logging.info("Connected to cluster using token-based credentials.")
+
 
 @click.command()
 def disconnect():
+    if not is_session_active():
+        click.secho("⚠️ No active session found. You are already disconnected.", fg="yellow")
+        logging.info("Disconnect called: no active session.")
+        return
     deleted = 0
     for key in ["API_SERVER", "KUBE_TOKEN", "SSL_VERIFY"]:
         try:
@@ -86,37 +104,76 @@ def disconnect():
         except Exception as e:
             logging.error(f"Error deleting key {key}: {e}")
 
+    clear_session()
+    click.secho("🔓 Disconnected: session ended.", fg="green")
+    logging.info("Session disconnected.")
+
     if deleted > 0:
         click.secho("🔓 Disconnected: credentials removed from system keyring.", fg="green")
     else:
-        click.secho("ℹ️ You were using kubeconfig. Nothing to disconnect.", fg="yellow")
+        click.secho("ℹ️ You were using kubeconfig. No token credentials were removed.", fg="yellow")
+        logging.info("Disconnect noted: kubeconfig in use, no token removed.")
 
 @click.command()
 @click.option('--disable-checks', '-d', multiple=True, help="Disable specific checks (e.g., --disable-checks privileged-containers)")
 @click.option('--output-format', '-o', type=click.Choice(["json", "yaml"], case_sensitive=False), help="Export report format")
+@click.option('--custom-rules', type=click.Path(exists=True), help="Path to a YAML file with custom resource validation rules")
 @click.option('--schedule', '-s', "schedule_option", type=click.Choice(["daily", "weekly"], case_sensitive=False), help="Schedule security scans automatically")
-def scan(disable_checks, output_format, schedule_option):
+def scan(disable_checks, output_format, custom_rules, schedule_option):
+    if not is_session_active():
+        click.secho("❌ No active session found. Please run `kube-sec connect` first.", fg="red", bold=True)
+        logging.warning("Scan attempt blocked: no active session.")
+        return
     if not output_format:
         click.secho("\n🚀 Starting Kubernetes Security Scan...\n", fg="cyan", bold=True)
+    logging.info("Scan command initiated.")
 
     nodes = check_cluster_connection()
     if not nodes:
-        error_report = {
-            "scan_timestamp": datetime.utcnow().isoformat() + "Z",
-            "status": "error",
-            "message": "Unable to connect to cluster",
-            "scan_results": {}
-        }
-        if output_format == "json":
-            with open("output.json", 'w') as f:
-                json.dump(error_report, f, indent=4)
-        elif output_format == "yaml":
-            with open("output.yaml", 'w') as f:
-                yaml.dump(error_report, f, default_flow_style=False, sort_keys=False)
-        if not output_format:
-            click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
+        click.secho("\n❌ Cannot proceed without cluster access.", fg="red", bold=True)
+        logging.error("Cluster connection failed. Exiting.")
         return
 
+    if custom_rules:
+        logging.info(f"Custom rule scan started using file: {custom_rules}")
+        rule_def = load_custom_rules(custom_rules)
+        if not rule_def:
+            click.secho("❌ Failed to load custom rule file.", fg="red")
+            logging.error("Failed to load custom rules YAML.")
+            return
+
+        results = run_custom_scan(rule_def)
+
+        if not output_format:
+            click.secho("\n📦 Custom Rule Scan Results:", fg="cyan", bold=True)
+            if results:
+                # click.echo(tabulate(results, headers="keys", tablefmt="grid"))
+
+                grouped = defaultdict(list)
+                for item in results:
+                    key = f"{item['Namespace']}/{item['Deployment']}"
+                    grouped[key].append(f"❌ {item['Rule']}: {item['Message']}")
+
+                for group, messages in grouped.items():
+                    namespace, deployment = group.split('/')
+                    click.secho(f"\n📦 Namespace: {namespace}", fg="cyan", bold=True)
+                    click.secho(f"   └── Deployment: {deployment}", fg="yellow")
+                    for msg in messages:
+                        click.echo(f"       - {msg}")
+
+            else:
+                click.secho("✅ All custom rules passed!", fg="green")
+        else:
+            filename = "output.json" if output_format == "json" else "output.yaml"
+            with open(filename, 'w') as f:
+                if output_format == "json":
+                    json.dump(results, f, indent=4)
+                else:
+                    yaml.dump(results, f, default_flow_style=False)
+            click.secho(f"\n📝 Custom scan results saved to {filename}", fg="green")
+            logging.info(f"Custom scan results saved to {filename}")
+        return
+    logging.info("Standard scan (non-custom) execution starting...")
     def run_scan():
         if not output_format:
             click.secho("✅ Cluster connection verified.", fg="green")
@@ -155,20 +212,7 @@ def scan(disable_checks, output_format, schedule_option):
 
         critical = sum(1 for severity, _ in security_issues if severity == "Critical")
         warning = sum(1 for severity, _ in security_issues if severity == "Warning")
-
-        if not output_format:
-            click.echo("\n✅ Scan Completed")
-            click.secho("\n📊 Security Summary:", bold=True)
-            click.secho(f"   🔴 {critical} Critical Issues", fg="red")
-            click.secho(f"   🟡 {warning} Warnings", fg="yellow")
-
-            if security_issues:
-                click.echo("\n🚨 Issues Detected:")
-                for severity, message in security_issues:
-                    color = "red" if severity == "Critical" else "yellow"
-                    click.secho(f"[{severity.upper()}] {message}", fg=color)
-            else:
-                click.secho("\n✅ No security issues found.", fg="green")
+       
         if not output_format:
             click.secho("\n📦 Detailed Check Results:", fg="cyan", bold=True)
             for check, output in results.items():
@@ -187,7 +231,22 @@ def scan(disable_checks, output_format, schedule_option):
                 else:
                     click.secho("✅ No issues found.", fg="green")
 
+        if not output_format:
+            click.echo("\n✅ Scan Completed")
+            click.secho("\n📊 Security Summary:", bold=True)
+            click.secho(f"   🔴 {critical} Critical Issues", fg="red")
+            click.secho(f"   🟡 {warning} Warnings", fg="yellow")
 
+            if security_issues:
+                click.echo("\n🚨 Issues Detected:")
+                for severity, message in security_issues:
+                    color = "red" if severity == "Critical" else "yellow"
+                    click.secho(f"[{severity.upper()}] {message}", fg=color)
+            else:
+                click.secho("\n✅ No security issues found.", fg="green")
+
+        # Print security summary
+        # print_security_summary()
         logging.info("Security scan completed.")
 
         if output_format in ["json", "yaml"]:

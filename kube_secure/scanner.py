@@ -2,12 +2,18 @@ import logging
 from kubernetes import client, config
 from colorama import Fore, Style
 import keyring
-from kube_secure.logger import log_issue
+# from kube_secure.logger import 
 from tenacity import retry, stop_after_attempt, wait_fixed
 import functools
 
 security_issues = []
 
+def report_issue(severity, message):
+    security_issues.append((severity, message))
+    level = logging.WARNING if severity == "Warning" else logging.CRITICAL if severity == "Critical" else logging.INFO
+    # level = logging.INFO
+    logging.log(level, f" {message}")
+    
 def load_k8():
     try:
         config.load_kube_config()
@@ -83,6 +89,8 @@ def check_privileged_containers_and_hostpath():
                         "Container Name": container.name,
                         "Issue": "Privileged container and HostPath volume mount"
                     })
+                    report_issue("Critical", f"Privileged container with hostPath in {pod.metadata.name}/{container.name}")
+
                 elif is_privileged:
                     results.append({
                         "Namespace": pod.metadata.namespace,
@@ -90,6 +98,8 @@ def check_privileged_containers_and_hostpath():
                         "Container Name": container.name,
                         "Issue": "Privileged container"
                     })
+                    report_issue("Critical", f"Privileged container in {pod.metadata.name}/{container.name}")
+
                 elif has_hostpath:
                     results.append({
                         "Namespace": pod.metadata.namespace,
@@ -97,6 +107,7 @@ def check_privileged_containers_and_hostpath():
                         "Container Name": container.name,
                         "Issue": "HostPath volume mount"
                     })
+                    report_issue("Warning", f"HostPath mount in {pod.metadata.name}/{container.name}")
         return results
     except Exception as e:
         logging.error("Error checking privileged containers and HostPath volumes:", str(e))
@@ -121,6 +132,8 @@ def check_pods_running_as_root():
                     risky_pods.append({
                         "Namespace": pod.metadata.namespace, 
                         "Pod name": pod.metadata.name})
+                    report_issue("Critical", f"Pod {pod.metadata.name} in namespace {pod.metadata.namespace} is running as root")
+
         return risky_pods
     except Exception as e:
         logging.error("\n❌ Error checking pods running as root:", str(e))
@@ -141,7 +154,8 @@ def check_host_pid_and_network():
                     "Host PID": pod.spec.host_pid, 
                     "Host Network": pod.spec.host_network})
                 message = f"Pod {pod.metadata.name} is using hostPID={pod.spec.host_pid}, hostNetwork={pod.spec.host_network}"
-                log_issue("Warning", message)
+                logging.warning(message)
+                report_issue("Warning", message)
         return risky_network_pods
     except Exception as e:
         logging.error("\n❌ Error checking hostPID/hostNetwork:", str(e))
@@ -342,18 +356,30 @@ def check_rbac_least_privilege():
         return None
 
 
-def report_issue(severity, message):
-    security_issues.append((severity, message))
 
 def print_security_summary():
+    logging.info("Generating security scan summary")
     print("\n🔎 Security Scan Summary:")
+
     if not security_issues:
         print(Fore.GREEN + "✅ No security issues found. Your cluster is safe!" + Style.RESET_ALL)
+        logging.info("Scan completed: No security issues found.")
         return
+
     critical = sum(1 for severity, _ in security_issues if severity == "Critical")
     warning = sum(1 for severity, _ in security_issues if severity == "Warning")
+
     print(f"{Fore.RED}⚠️  {critical} Critical Issues | {Fore.YELLOW}⚠️  {warning} Warnings{Style.RESET_ALL}\n")
+
+    displayed = set()
     for severity, message in security_issues:
-        color = Fore.RED if severity == "Critical" else Fore.YELLOW
-        print(f"   {color}[{severity}] {message}{Style.RESET_ALL}")
-        log_issue(severity, message)
+        if message not in displayed:
+            color = Fore.RED if severity == "Critical" else Fore.YELLOW
+            print(f"   {color}[{severity}] {message}{Style.RESET_ALL}")
+            displayed.add(message)
+
+        # Always log full issue set (even if not printed again)
+        logging.info(f"[{severity}] {message}")
+
+    logging.info("Scan summary generation complete.")
+
