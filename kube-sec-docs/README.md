@@ -1,18 +1,26 @@
-# kube-sec
+# Kube-Sec Docs
 
-A Kubernetes Security Hardening CLI Tool.
+Kube-Sec is a Kubernetes security CLI focused on quick misconfiguration scanning for engineering and platform teams.
 
-![Logo](placeholder-logo.png)
+## What You’ll Find Here
 
-## Features
-- Built-in security checks
-- Custom rule scanning via YAML
-- Session-based cluster authentication
-- JSON/YAML scan reports
+- Installation and quickstart guidance
+- Authentication patterns for kubeconfig and service accounts
+- Built-in security checks and custom rules
+- Logging, troubleshooting, and roadmap notes
+
+## Suggested Reading Order
+
+1. `installation.md`
+2. `authentication.md`
+3. `scanning.md`
+4. `builtin-checks.md`
+5. `custom-rules.md`
 
 ## Quickstart
+
 ```bash
-pip install kube-sec
+python3 -m pip install -e .
 kube-sec connect
 kube-sec scan
 ```

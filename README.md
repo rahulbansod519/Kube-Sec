@@ -1,92 +1,113 @@
-# Kubernetes Security Hardening CLI
+# Kube-Sec
 
+Kube-Sec is a lightweight Kubernetes security CLI for teams that want fast signal on risky cluster configurations without standing up a full platform first.
 
-https://github.com/user-attachments/assets/c55b8fa9-2dfc-4497-bb4b-b9684b7c8ef2
+It focuses on practical day-one checks: privileged workloads, root containers, weak RBAC, public services, exposed ports, and ineffective network policies. You can run the built-in checks, add your own YAML rules, and export reports for triage or automation.
 
+## Why It Matters
 
+- Fast first scan with `kubeconfig` or token-based authentication
+- Startup-friendly CLI that works well for local audits and CI experiments
+- Actionable findings across workload, network, and RBAC exposure
+- JSON or YAML reports for sharing, pipelines, or follow-up automation
+- Extensible custom rule engine for deployment-level policy checks
 
-## Overview
-Kubernetes Security Hardening CLI is a tool designed to scan Kubernetes clusters for security misconfigurations and vulnerabilities. It helps identify issues such as:
+## Built-In Checks
 
-- Privileged containers
-- RBAC misconfigurations
-- Publicly accessible services
-- Pods running as root
-- Host PID/network exposure
-
-## Features
-- **Cluster Connection:** Supports kubeconfig and Service Account authentication.
-- **Security Scan:** Detects potential misconfigurations and vulnerabilities.
-- **Scheduled Scans:** Runs daily or weekly background scans.// Not completed
-- **Logging & Reporting:** Logs security scan results and exports reports in JSON/CSV formats.
-- **Customizable Checks:** Allows users to disable specific security checks.
+- `host-pid-and-network-exposure`
+- `root-user-pods`
+- `non-root-enforcement`
+- `rbac-privileges`
+- `rbac-least-privilege`
+- `public-service-exposure`
+- `open-network-ports`
+- `internal-traffic-controls`
+- `external-service-exposure`
+- `privileged-containers-and-hostpath-mounts`
 
 ## Installation
 
-```sh
-# Clone the repository
+```bash
 git clone https://github.com/rahulbansod519/Kube-Sec.git
-cd kube-sec/kube-secure
-
-# Install 
-pip install -e .
+cd Kube-Sec
+python3 -m pip install -e .
 ```
 
-## Usage
+## Quickstart
 
-### Connect to a Cluster
-You can connect using kubeconfig or a Service Account.
+Use local kubeconfig:
 
-```sh
-# Connect using kubeconfig (default)
+```bash
 kube-sec connect
-
-# Connect using Service Account
-kube-sec connect <API_SERVER> --token-path <TOKEN-PATH>
-```
-
-For instructions on creating a Service Account, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
-
-### Run Security Scan
-
-```sh
-# Run a full security scan
 kube-sec scan
-
-# Disable specific checks (example: ignore RBAC misconfigurations)
-## Security Checks
-security_checks = {
-            privileged-containers
-            host-pid
-            pods-running-as-root
-            rbac-misconfig
-            public-services
-        }
-kube-scan scan --disable rbac-misconfig
-
-# Export results in JSON format
-kube-sec scan --output report.json
 ```
 
-### Schedule a Scan
+Use a service account token:
 
-```sh
-# Schedule a daily scan
-kube-sec scan -s daily
-
-# Schedule a weekly scan
-kube-sec scan -s --weekly
+```bash
+kube-sec connect https://your-api-server:6443 --token-path /path/to/token
+kube-sec scan
 ```
 
-## CLI Commands Cheatsheet
-For a full list of available commands, see [Command Cheatsheet](https://github.com/rahulbansod519/Kube-Sec/blob/main/COMMANDS.md).
+You can also run `kube-sec scan` directly when your local `kubeconfig` is already valid.
 
-## Service Account Setup
-For creating a Service Account and retrieving its token, see [Service Account Setup](https://github.com/rahulbansod519/Kube-Sec/blob/main/Service%20Account%20Setup.md).
+## Common Workflows
 
-## Disclaimer
+Run the full built-in scan:
 
-This is a basic project, and more features are yet to come. It is not production-ready. We welcome feedback and suggestions on what features you would like to see in future updates.
+```bash
+kube-sec scan
+```
 
+Skip one or more checks:
 
+```bash
+kube-sec scan --disable-checks rbac-privileges --disable-checks open-network-ports
+```
 
+Export a report:
+
+```bash
+kube-sec scan --output-format json
+kube-sec scan --output-format yaml --report-file reports/prod-scan.yaml
+```
+
+Run custom rules:
+
+```bash
+kube-sec scan --custom-rules deployment-rules.yaml
+```
+
+Keep a recurring scheduler alive:
+
+```bash
+kube-sec scan --schedule daily
+```
+
+## Example Output
+
+```text
+📊 Security Summary:
+   🔴 2 Critical Issues
+   🟡 4 Warnings
+```
+
+Reports are written to `reports/kube-sec-report.json` or `reports/kube-sec-report.yaml` by default.
+
+## Documentation
+
+- [Commands](COMMANDS.md)
+- [Service Account Setup](Service%20Account%20Setup.md)
+- [Project Docs](kube-sec-docs/README.md)
+- [OWASP Checks Notes](OWASP_checks.md)
+
+## Near-Term Product Direction
+
+- Add CI-ready exit codes and severity thresholds
+- Expand custom-rule support beyond deployments
+- Introduce richer report metadata and trend comparison
+- Package official examples for common cluster hardening baselines
+
+## Status
+
+This project is still early, but the CLI and docs are now set up as a stronger foundation for a security-focused startup prototype: fast onboarding, clearer outputs, and more reliable scan behavior.

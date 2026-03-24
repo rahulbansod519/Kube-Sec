@@ -1,63 +1,115 @@
-# Kube-Sec CLI - Commands Cheat Sheet
+# Kube-Sec CLI Command Guide
 
-## Running Security Scans
+## Authentication
 
-### Run All Security Checks
-```sh
-kube-secure scan
+Use local kubeconfig:
+
+```bash
+kube-sec connect
 ```
 
-### Disable Specific Checks
-```sh
-kube-secure scan --disable-checks privileged-containers
+Use a service account token:
+
+```bash
+kube-sec connect https://your-api-server:6443 --token-path /path/to/token
 ```
 
-### Export Report in JSON Format
-```sh
-kube-secure scan --output-format json
+Pass a raw token directly:
+
+```bash
+kube-sec connect https://your-api-server:6443 --token "$KUBE_TOKEN"
 ```
 
-### Export Report in CSV Format
-```sh
-kube-secure scan --output-format csv
+Clear stored session state and token-based credentials:
+
+```bash
+kube-sec disconnect
 ```
 
-### Schedule Daily Scan
-```sh
-kube-secure scan --schedule daily
+## Standard Scans
+
+Run all built-in checks:
+
+```bash
+kube-sec scan
 ```
 
-### Schedule Weekly Scan
-```sh
-kube-secure scan --schedule weekly
+Disable specific checks:
+
+```bash
+kube-sec scan --disable-checks rbac-privileges
 ```
 
----
+Disable multiple checks:
 
-## Kubernetes Security Checks Explained
-
-- **Privileged Containers:** Identifies containers running with privileged mode enabled.
-- **Host PID/Network Sharing:** Detects pods sharing the host process or network namespaces.
-- **Pods Running as Root:** Finds pods running as root user.
-- **RBAC Misconfigurations:** Analyzes misconfigured RBAC roles.
-- **Publicly Accessible Services:** Identifies services exposed to public networks.
-
----
-
-## Logs and Reports
-
-### View Logs
-```sh
-tail -f logs/kube-secure.log
+```bash
+kube-sec scan --disable-checks rbac-privileges --disable-checks open-network-ports
 ```
 
-### View JSON Report
-```sh
-cat reports/security-report.json
+## Reports
+
+Export JSON:
+
+```bash
+kube-sec scan --output-format json
 ```
 
-### View CSV Report
-```sh
-cat reports/security-report.csv
+Export YAML:
+
+```bash
+kube-sec scan --output-format yaml
 ```
 
+Write the report to a custom path:
+
+```bash
+kube-sec scan --output-format json --report-file reports/staging-scan.json
+```
+
+## Custom Rules
+
+Run custom YAML-based checks:
+
+```bash
+kube-sec scan --custom-rules deployment-rules.yaml
+```
+
+Export custom-rule results:
+
+```bash
+kube-sec scan --custom-rules deployment-rules.yaml --output-format yaml
+```
+
+## Scheduling
+
+Run an immediate scan, then keep scheduling daily scans at 02:00:
+
+```bash
+kube-sec scan --schedule daily
+```
+
+Run an immediate scan, then keep scheduling weekly scans on Monday at 03:00:
+
+```bash
+kube-sec scan --schedule weekly
+```
+
+Press `Ctrl+C` to stop the scheduler.
+
+## Built-In Check Names
+
+- `host-pid-and-network-exposure`
+- `root-user-pods`
+- `non-root-enforcement`
+- `rbac-privileges`
+- `rbac-least-privilege`
+- `public-service-exposure`
+- `open-network-ports`
+- `internal-traffic-controls`
+- `external-service-exposure`
+- `privileged-containers-and-hostpath-mounts`
+
+## Logs And Reports
+
+- Logs are written under `logs/`
+- Reports are written under `reports/` by default when `--output-format` is used

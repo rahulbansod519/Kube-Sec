@@ -2,27 +2,53 @@ import logging
 from kubernetes import client, config
 from colorama import Fore, Style
 import keyring
-# from kube_secure.logger import 
 from tenacity import retry, stop_after_attempt, wait_fixed
 import functools
+import threading
 
 security_issues = []
+_issues_lock = threading.Lock()
+KEYRING_SERVICE = "kube-sec"
+API_SERVER_KEY = "API_SERVER"
+TOKEN_KEY = "KUBE_TOKEN"
+SSL_VERIFY_KEY = "SSL_VERIFY"
 
 def report_issue(severity, message):
-    security_issues.append((severity, message))
+    with _issues_lock:
+        security_issues.append((severity, message))
     level = logging.WARNING if severity == "Warning" else logging.CRITICAL if severity == "Critical" else logging.INFO
-    # level = logging.INFO
     logging.log(level, f" {message}")
+
+
+def reset_security_issues():
+    with _issues_lock:
+        security_issues.clear()
+
+
+def get_security_issues():
+    with _issues_lock:
+        return list(security_issues)
+
+
+def get_issue_counts():
+    issues = get_security_issues()
+    critical = sum(1 for severity, _ in issues if severity == "Critical")
+    warning = sum(1 for severity, _ in issues if severity == "Warning")
+    return critical, warning
     
 def load_k8():
     try:
         config.load_kube_config()
         return True
-    except:
+    except Exception:
         try:
-            api_server = keyring.get_password("kube-sec", "api_server")
-            token = keyring.get_password("kube-sec", "kube_token")
-            ssl_verify = keyring.get_password("kube-sec", "SSL_VERIFY")
+            api_server = keyring.get_password(KEYRING_SERVICE, API_SERVER_KEY)
+            token = keyring.get_password(KEYRING_SERVICE, TOKEN_KEY)
+            ssl_verify = keyring.get_password(KEYRING_SERVICE, SSL_VERIFY_KEY)
+
+            if not api_server or not token:
+                logging.error("Stored token-based credentials are incomplete.")
+                return False
 
             configuration = client.Configuration()
             configuration.host = api_server
@@ -32,7 +58,7 @@ def load_k8():
             client.Configuration.set_default(configuration)
             return True
         except Exception as e:
-            logging.error("Error loading Kubernetes config:", e)
+            logging.error(f"Error loading Kubernetes config: {e}")
             return False
 
 def require_cluster_connection(func):
@@ -45,19 +71,18 @@ def require_cluster_connection(func):
         return func(*args, **kwargs)
     return wrapper
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))     
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
-def check_cluster_connection():
+def check_cluster_connection(show_details=True):
     try:
         v1 = client.CoreV1Api()
         nodes = v1.list_node().items
         server_version = client.VersionApi().get_code()
-      
-        pods = v1.list_pod_for_all_namespaces().items
 
-        print("\n🔹 Kubernetes Cluster Information:")
-        print(f"   🏷️  API Server Version: {server_version.git_version}")
-        print(f"   🔢 Number of Nodes: {len(nodes)}")
+        if show_details:
+            print("\n🔹 Kubernetes Cluster Information:")
+            print(f"   🏷️  API Server Version: {server_version.git_version}")
+            print(f"   🔢 Number of Nodes: {len(nodes)}")
        
         return nodes
     except Exception as e:
@@ -74,14 +99,16 @@ def check_privileged_containers_and_hostpath():
     try:
         pods = v1.list_pod_for_all_namespaces().items
         for pod in pods:
+            host_path_volumes = {
+                volume.name
+                for volume in (pod.spec.volumes or [])
+                if getattr(volume, "host_path", None) is not None
+            }
             for container in pod.spec.containers:
                 is_privileged = container.security_context and container.security_context.privileged
-                has_hostpath = False
-                if container.volume_mounts:
-                    for mount in container.volume_mounts:
-                        if "hostPath" in mount.name or mount.mount_path == "/host":
-                            has_hostpath = True
-                            break
+                has_hostpath = any(
+                    mount.name in host_path_volumes for mount in (container.volume_mounts or [])
+                )
                 if is_privileged and has_hostpath:
                     results.append({
                         "Namespace": pod.metadata.namespace,
@@ -110,8 +137,8 @@ def check_privileged_containers_and_hostpath():
                     report_issue("Warning", f"HostPath mount in {pod.metadata.name}/{container.name}")
         return results
     except Exception as e:
-        logging.error("Error checking privileged containers and HostPath volumes:", str(e))
-        return None
+        logging.error(f"Error checking privileged containers and HostPath volumes: {e}")
+        return [{"Error": str(e)}]
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -130,14 +157,15 @@ def check_pods_running_as_root():
 
                 if (container_run_as_user is None or container_run_as_user == 0) and (pod_run_as_user is None or pod_run_as_user == 0):
                     risky_pods.append({
-                        "Namespace": pod.metadata.namespace, 
-                        "Pod name": pod.metadata.name})
+                        "Namespace": pod.metadata.namespace,
+                        "Pod Name": pod.metadata.name,
+                    })
                     report_issue("Critical", f"Pod {pod.metadata.name} in namespace {pod.metadata.namespace} is running as root")
 
         return risky_pods
     except Exception as e:
-        logging.error("\n❌ Error checking pods running as root:", str(e))
-        return None
+        logging.error(f"Error checking pods running as root: {e}")
+        return [{"Error": str(e)}]
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -158,8 +186,8 @@ def check_host_pid_and_network():
                 report_issue("Warning", message)
         return risky_network_pods
     except Exception as e:
-        logging.error("\n❌ Error checking hostPID/hostNetwork:", str(e))
-        return None
+        logging.error(f"Error checking hostPID/hostNetwork: {e}")
+        return [{"Error": str(e)}]
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -169,17 +197,32 @@ def check_pods_running_as_non_root():
     try:
         pods = v1.list_pod_for_all_namespaces().items
         for pod in pods:
+            pod_security_context = pod.spec.security_context
+            pod_run_as_non_root = (
+                pod_security_context.run_as_non_root if pod_security_context else None
+            )
             for container in pod.spec.containers:
-                if container.security_context and container.security_context.run_as_non_root is False:
+                container_security_context = container.security_context
+                container_run_as_non_root = (
+                    container_security_context.run_as_non_root if container_security_context else None
+                )
+                if container_run_as_non_root is not True and pod_run_as_non_root is not True:
                     non_root_pods.append({
                         "Namespace": pod.metadata.namespace,
-                        "Pod name": pod.metadata.name,
-                        "Container name": container.name
+                        "Pod Name": pod.metadata.name,
+                        "Container Name": container.name
                     })
+                    report_issue(
+                        "Warning",
+                        (
+                            f"Container {container.name} in pod {pod.metadata.namespace}/"
+                            f"{pod.metadata.name} does not enforce runAsNonRoot"
+                        ),
+                    )
         return non_root_pods
     except Exception as e:
         logging.error("Error checking non-root enforcement:", str(e))
-        return None
+        return []
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -205,6 +248,10 @@ def check_open_ports():
                     "type": svc.spec.type,
                     "external_ip": external_ip
                 })
+                report_issue(
+                    "Warning",
+                    f"Service {svc_namespace}/{svc_name} exposes port {port_number} via {svc.spec.type}",
+                )
 
     if not open_ports:
         open_ports.append("No insecure open ports detected.")
@@ -224,13 +271,18 @@ def check_publicly_accessible_services():
                 continue
             if svc.spec and svc.spec.type in ["NodePort", "LoadBalancer"]:
                 public_services.append({
-                    "Namesapce": svc.metadata.namespace, 
-                    "Service": svc.metadata.name, 
-                    "Type": svc.spec.type})
+                    "Namespace": svc.metadata.namespace,
+                    "Service": svc.metadata.name,
+                    "Type": svc.spec.type
+                })
+                report_issue(
+                    "Warning",
+                    f"Service {svc.metadata.namespace}/{svc.metadata.name} is publicly accessible via {svc.spec.type}",
+                )
         return public_services
     except Exception as e:
         logging.error("\n❌ Error checking public services:", str(e))
-        return None
+        return []
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -249,10 +301,14 @@ def check_network_exposure():
                     "Type": svc.spec.type,
                     "External IP": external_ip
                 })
+                report_issue(
+                    "Warning",
+                    f"Service {svc_namespace}/{svc.metadata.name} has external network exposure ({external_ip})",
+                )
         return public_services
     except Exception as e:
         logging.error("Error checking network exposure:", str(e))
-        return None
+        return []
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
 @require_cluster_connection
@@ -279,6 +335,10 @@ def check_weak_firewall_rules():
                         "Policy": policy_name,
                         "Issue": "No ingress rules defined"
                     })
+                    report_issue(
+                        "Warning",
+                        f"NetworkPolicy {namespace}/{policy_name} has no ingress rules defined",
+                    )
                     continue
 
                 # Case 2: Pod selector matches no pods
@@ -302,6 +362,10 @@ def check_weak_firewall_rules():
                         "Policy": policy_name,
                         "Issue": "NetworkPolicy is ineffective because it doesn't apply to any existing pods"
                     })
+                    report_issue(
+                        "Warning",
+                        f"NetworkPolicy {namespace}/{policy_name} does not match any pods",
+                    )
 
             if not weak_policies:
                 weak_policies.append({"Info": "All network policies are properly scoped and enforced."})
@@ -332,10 +396,19 @@ def check_rbac_misconfigurations():
             if role.role_ref.name == "Cluster-admin":
                 for subject in role.subjects or []:
                     if subject.kind in ["User", "Group", "ServiceAccount"]:
-                        risky_user.append((subject.kind, subject.name))
+                        risky_user.append({
+                            "Kind": subject.kind,
+                            "Name": subject.name,
+                            "Role": role.role_ref.name,
+                        })
+                        report_issue(
+                            "Critical",
+                            f"{subject.kind} {subject.name} is bound to cluster-admin",
+                        )
         return risky_user
     except Exception as e:
-        logging.error("\n Error checking RBAC misconfiguration", str(e))
+        logging.error(f"Error checking RBAC misconfiguration: {e}")
+        return []
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
@@ -349,11 +422,19 @@ def check_rbac_least_privilege():
             if role.role_ref.name == "Cluster-admin":
                 for subject in role.subjects or []:
                     if subject.kind in ["User", "Group", "ServiceAccount"]:
-                        risky_roles.append((subject.kind, subject.name))
+                        risky_roles.append({
+                            "Kind": subject.kind,
+                            "Name": subject.name,
+                            "Role": role.role_ref.name,
+                        })
+                        report_issue(
+                            "Warning",
+                            f"{subject.kind} {subject.name} should be reviewed for least-privilege access",
+                        )
         return risky_roles
     except Exception as e:
         logging.error("Error checking RBAC least privilege:", str(e))
-        return None
+        return []
 
 
 
@@ -361,18 +442,19 @@ def print_security_summary():
     logging.info("Generating security scan summary")
     print("\n🔎 Security Scan Summary:")
 
-    if not security_issues:
+    issues = get_security_issues()
+    if not issues:
         print(Fore.GREEN + "✅ No security issues found. Your cluster is safe!" + Style.RESET_ALL)
         logging.info("Scan completed: No security issues found.")
         return
 
-    critical = sum(1 for severity, _ in security_issues if severity == "Critical")
-    warning = sum(1 for severity, _ in security_issues if severity == "Warning")
+    critical = sum(1 for severity, _ in issues if severity == "Critical")
+    warning = sum(1 for severity, _ in issues if severity == "Warning")
 
     print(f"{Fore.RED}⚠️  {critical} Critical Issues | {Fore.YELLOW}⚠️  {warning} Warnings{Style.RESET_ALL}\n")
 
     displayed = set()
-    for severity, message in security_issues:
+    for severity, message in issues:
         if message not in displayed:
             color = Fore.RED if severity == "Critical" else Fore.YELLOW
             print(f"   {color}[{severity}] {message}{Style.RESET_ALL}")
@@ -382,4 +464,3 @@ def print_security_summary():
         logging.info(f"[{severity}] {message}")
 
     logging.info("Scan summary generation complete.")
-

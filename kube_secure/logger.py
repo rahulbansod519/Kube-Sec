@@ -3,6 +3,10 @@ import os
 from datetime import datetime
 import keyring
 
+KEYRING_SERVICE = "kube-sec"
+API_SERVER_KEY = "API_SERVER"
+TOKEN_KEY = "KUBE_TOKEN"
+
 # Ensure log directory exists
 log_dir = os.path.join(os.getcwd(), "logs")
 os.makedirs(log_dir, exist_ok=True)
@@ -26,6 +30,5 @@ for noisy_logger in ["urllib3", "kubernetes"]:
 
 
 def save_credentials(api_server, token):
-    keyring.set_password("kube-sec", "API_SERVER", api_server)
-    keyring.set_password("kube-sec", "KUBE_TOKEN", token)
-    print("🔐 Credentials saved securely using system keyring.")
+    keyring.set_password(KEYRING_SERVICE, API_SERVER_KEY, api_server)
+    keyring.set_password(KEYRING_SERVICE, TOKEN_KEY, token)
